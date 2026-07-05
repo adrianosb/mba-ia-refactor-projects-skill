@@ -95,3 +95,83 @@ A skill detecta a stack na Fase 1 (pelo manifesto de dependências e imports) e 
 - **Equilibrar tamanho e cobertura.** Os arquivos de referência podiam ficar enormes. Mantive o playbook enxuto (uma transformação por anti-pattern) apontando que engrossar catálogo e playbook é a iteração normal caso a skill detecte pouco.
 - **Não quebrar projetos já organizados.** O 3º projeto já tem `models/`, `routes/`, `services/`. Adicionei em `mvc-guidelines.md` uma seção específica de "camadas parciais" para a skill não reestruturar do zero.
 - **Preservar comportamento.** Como a refatoração move muito código, a Fase 3 tem validação obrigatória (boot da aplicação + bater em cada rota original) antes de reportar sucesso.
+
+
+## 3. Resultados
+
+> Por enquanto a skill foi executada no **code-smells-project**. Os projetos `ecommerce-api-legacy` e `task-manager-api` serão rodados depois e entram aqui na sequência.
+
+### Resumo da auditoria — code-smells-project
+
+Relatório completo em [`reports/audit-project-1.md`](reports/audit-project-1.md).
+
+| Projeto | Stack | CRITICAL | HIGH | MEDIUM | LOW | Total |
+|---|---|---:|---:|---:|---:|---:|
+| code-smells-project | Python/Flask 3.1.1 | 5 | 4 | 3 | 2 | 14 |
+
+Os 5 CRITICAL são os de segurança/arquitetura: SQL injection generalizado, credenciais hardcoded, senha em texto puro, God file (`models.py` com 314 linhas) e os dois endpoints `/admin/*` sem autenticação.
+
+### Estrutura antes/depois
+
+```
+antes                          depois
+─────────────────────          ──────────────────────────────
+app.py         (88 L)          src/app.py              composition root (create_app)
+controllers.py (292 L)         src/config/settings.py  env vars, constantes
+models.py      (314 L)  God    src/database.py         conexão por request + seed
+database.py    (86 L)          src/models/             produto, usuario, pedido
+                               src/controllers/        produto, usuario, pedido, relatorio, health
+                               src/routes/             5 Blueprints (só roteamento)
+                               src/middlewares/        error_handler central
+                               .env.example
+
+4 arquivos, ~780 linhas        ~15 módulos em 6 camadas
+```
+
+### Checklist de validação — code-smells-project
+
+**Fase 1 — Análise**
+- [x] Linguagem detectada corretamente (Python)
+- [x] Framework detectado corretamente (Flask 3.1.1)
+- [x] Domínio descrito corretamente (API de E-commerce)
+- [x] Número de arquivos analisados condiz com a realidade (4)
+
+**Fase 2 — Auditoria**
+- [x] Relatório segue o template definido nos arquivos de referência
+- [x] Cada finding tem arquivo e linhas exatos
+- [x] Findings ordenados por severidade (CRITICAL → LOW)
+- [x] Mínimo de 5 findings identificados (14 encontrados)
+- [x] Detecção de APIs deprecated incluída (nenhuma no código)
+- [x] Skill pausa e pede confirmação antes da Fase 3
+
+**Fase 3 — Refatoração**
+- [x] Estrutura de diretórios segue padrão MVC
+- [x] Configuração extraída para módulo de config (sem hardcoded)
+- [x] Models criados para abstrair dados (produto, usuario, pedido)
+- [x] Views/Routes separadas para roteamento (Blueprints)
+- [x] Controllers concentram o fluxo da aplicação
+- [x] Error handling centralizado (`middlewares/error_handler.py`)
+- [x] Entry point claro (`src/app.py` só faz o wiring)
+- [x] Aplicação inicia sem erros
+- [x] Endpoints originais respondem corretamente
+
+Correções de segurança que alteram o contrato de saída (sinalizadas): `senha` removida de `/usuarios`, `secret_key`/`db_path`/`debug` removidos de `/health`, e os endpoints `/admin/query` e `/admin/reset-db` removidos (executavam SQL arbitrário sem auth). Senhas do seed passaram a ser gravadas com hash (`werkzeug.security`), então o login continua funcionando com as mesmas credenciais.
+
+### Log da aplicação rodando após a refatoração
+
+```
+$ python src/app.py
+ * Serving Flask app 'app'
+ * Running on http://127.0.0.1:5000
+INFO werkzeug 127.0.0.1 - - "GET /health HTTP/1.1" 200 -
+INFO werkzeug 127.0.0.1 - - "GET /produtos HTTP/1.1" 200 -
+INFO werkzeug 127.0.0.1 - - "GET /usuarios HTTP/1.1" 200 -
+INFO werkzeug 127.0.0.1 - - "POST /login HTTP/1.1" 200 -
+INFO werkzeug 127.0.0.1 - - "GET /relatorios/vendas HTTP/1.1" 200 -
+```
+
+Sweep completo das 17 rotas (leitura, escrita, validação e checagens de segurança) passou: `/usuarios` sem campo `senha`, `/health` sem segredos, `/admin/*` respondendo 404.
+
+### Observação sobre a stack
+
+No monolito Flask a Fase 3 criou toda a estrutura MVC do zero — não havia camada nenhuma para aproveitar. A conexão global com `check_same_thread=False` virou conexão por request via `flask.g`, e as queries concatenadas viraram parametrizadas sem mudar as rotas. A comparação entre stacks diferentes fecha quando os projetos Node/Express e o Flask já parcialmente organizado forem rodados.

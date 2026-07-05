@@ -99,7 +99,7 @@ A skill detecta a stack na Fase 1 (pelo manifesto de dependências e imports) e 
 
 ## 3. Resultados
 
-> A skill já foi executada no **code-smells-project** e no **ecommerce-api-legacy**. O `task-manager-api` será rodado depois e entra aqui na sequência.
+> A skill foi executada nos três projetos: **code-smells-project**, **ecommerce-api-legacy** e **task-manager-api**.
 
 ### Resumo da auditoria — code-smells-project
 
@@ -297,3 +297,111 @@ Retornos reais da rodada limpa: checkout de sucesso devolveu `{"msg":"Sucesso","
 ### Observação sobre a stack (Node/Express)
 
 Aqui o problema central era uma God class com SQL cru em callbacks aninhados, não um monolito de arquivo único como no Flask. A skill manteve a ideia das camadas e adaptou a sintaxe: a transação virou `db.transaction()` sobre a API do `sqlite3` promissificada, o relatório com 4 níveis de callback aninhado (N+1) virou um `JOIN` agregado em memória, e o hash caseiro foi para `scrypt` nativo. As rotas e os shapes de resposta continuaram os mesmos — só as duas rotas admin ganharam o gate de autenticação, sinalizado acima.
+
+---
+
+### Resumo da auditoria — task-manager-api
+
+Relatório completo em [`reports/audit-project-3.md`](reports/audit-project-3.md).
+
+| Projeto | Stack | CRITICAL | HIGH | MEDIUM | LOW | Total |
+|---|---|---:|---:|---:|---:|---:|
+| task-manager-api | Python/Flask 3.0.0 | 2 | 2 | 3 | 2 | 9 |
+
+Os 2 CRITICAL são de segurança: `SECRET_KEY` e a senha de SMTP hardcoded (`services/notification_service.py`), e o hash de senha em MD5 sem salt. Os 2 HIGH são o hash de senha exposto no JSON de `/users` e `/login`, e a regra de negócio (cálculo de "overdue" e agregações de relatório) espalhada dentro das rotas.
+
+### Estrutura antes/depois — task-manager-api
+
+Diferente dos outros dois, este projeto **já vinha com camadas parciais** (`models/`, `routes/`, `services/`, `utils/`). A Fase 3 completou o que faltava em vez de reestruturar do zero.
+
+```
+antes                                depois
+───────────────────────────         ──────────────────────────────
+app.py       (35 L) config fixa      config.py            NOVO — env vars, sem hardcoded
+                    + rotas           .env.example         NOVO
+database.py                          app.py               composition root (create_app)
+seed.py                              models/              hash werkzeug, to_dict sem password
+models/      to_dict com password    controllers/         NOVO — task, user, report
+routes/      lógica dentro (~740 L)  routes/              3 Blueprints finos (parse→controller)
+services/    creds hardcoded         services/            creds via config, logging
+utils/       constantes sem uso      middlewares/         NOVO — error_handler central
+                                     utils/               utcnow() + constantes usadas
+
+camadas parciais, lógica nas rotas   MVC completo, rotas só roteiam
+```
+
+### Checklist de validação — task-manager-api
+
+**Fase 1 — Análise**
+- [x] Linguagem detectada corretamente (Python)
+- [x] Framework detectado corretamente (Flask 3.0.0 + SQLAlchemy)
+- [x] Domínio descrito corretamente (API de Task Manager)
+- [x] Número de arquivos analisados condiz com a realidade (11)
+
+**Fase 2 — Auditoria**
+- [x] Relatório segue o template definido nos arquivos de referência
+- [x] Cada finding tem arquivo e linhas exatos
+- [x] Findings ordenados por severidade (CRITICAL → LOW)
+- [x] Mínimo de 5 findings identificados (9 encontrados)
+- [x] Detecção de APIs deprecated incluída (`datetime.utcnow()`, `Query.get()`, `type() ==`)
+- [x] Skill pausa e pede confirmação antes da Fase 3
+
+**Fase 3 — Refatoração**
+- [x] Estrutura de diretórios segue padrão MVC
+- [x] Configuração extraída para módulo de config (sem hardcoded)
+- [x] Models criados para abstrair dados (user, task, category)
+- [x] Views/Routes separadas para roteamento (Blueprints finos)
+- [x] Controllers concentram o fluxo da aplicação
+- [x] Error handling centralizado (`middlewares/error_handler.py`)
+- [x] Entry point claro (`app.py` só faz o wiring)
+- [x] Aplicação inicia sem erros
+- [x] Endpoints originais respondem corretamente
+
+Correção de segurança que altera o contrato de saída (sinalizada): o campo `password` foi removido do JSON de `/users`, `/users/<id>`, `POST /users` e `/login`. As senhas do seed passaram a ser gravadas com `werkzeug.security`, então o login continua funcionando com as mesmas credenciais. Todo o resto (métodos, paths, status, demais campos) permanece idêntico.
+
+### Log da aplicação rodando após a refatoração
+
+```
+$ python app.py
+ * Serving Flask app 'app'
+ * Debug mode: off
+ * Running on http://127.0.0.1:5001
+INFO werkzeug: 127.0.0.1 - - "GET /health HTTP/1.1" 200 -
+INFO werkzeug: 127.0.0.1 - - "GET /tasks HTTP/1.1" 200 -
+INFO werkzeug: 127.0.0.1 - - "GET /reports/summary HTTP/1.1" 200 -
+INFO werkzeug: 127.0.0.1 - - "GET /users HTTP/1.1" 200 -
+INFO werkzeug: 127.0.0.1 - - "POST /login HTTP/1.1" 200 -
+```
+
+(Porta 5001 porque a 5000 estava ocupada por outro processo na máquina; o `app.py` sobe na 5000 por padrão.)
+
+### Validação com curl — task-manager-api
+
+Servidor real no ar, as 22 rotas conferidas — abaixo a amostra principal:
+
+| Método | Rota | Status | O que valida |
+|---|---|---:|---|
+| GET | `/health` | 200 | boot sem expor config |
+| GET | `/tasks` | 200 | listagem (JOIN, sem N+1) |
+| GET | `/tasks/1` | 200 | busca por id + `overdue` |
+| GET | `/tasks/search?status=pending` | 200 | busca parametrizada |
+| GET | `/tasks/stats` | 200 | agregação em controller |
+| GET | `/users` | 200 | **sem o campo `password`** |
+| GET | `/users/1` | 200 | usuário + tasks |
+| GET | `/reports/summary` | 200 | agregação em memória (sem N+1) |
+| GET | `/reports/user/1` | 200 | relatório por usuário |
+| GET | `/categories` | 200 | listagem |
+| POST | `/tasks` | 201 | criação |
+| POST | `/tasks` (título curto) | 400 | validação |
+| PUT | `/tasks/1` | 200 | atualização |
+| DELETE | `/tasks/1` | 200 | remoção |
+| POST | `/users` | 201 | cadastro (sem `password` na resposta) |
+| POST | `/users` (email repetido) | 409 | conflito |
+| POST | `/login` (senha certa) | 200 | hash werkzeug funcionando |
+| POST | `/login` (senha errada) | 401 | credencial inválida |
+| DELETE | `/users/4` | 200 | remoção + cascade das tasks |
+| GET | `/tasks/9999` | 404 | not found |
+
+### Observação sobre a stack (Flask já organizado)
+
+Este foi o caso mais próximo do dia a dia: o projeto não estava quebrado, só mal-distribuído. A skill respeitou as pastas existentes e resistiu à tentação de renomear `routes/` para `views/` só por template — o ganho foi mover a lógica que estava nas rotas para `controllers/` e completar as camadas ausentes (`config`, `middlewares`). Comparado ao monolito do projeto 1, onde criou tudo do zero, aqui a mesma skill fez o oposto: **subtraiu duplicação e realocou**, sem churn desnecessário. É a evidência de que as guidelines de "projeto com camadas parciais" funcionam — a Fase 3 se adapta ao ponto de partida em vez de aplicar um layout fixo.

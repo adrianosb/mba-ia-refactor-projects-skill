@@ -172,6 +172,35 @@ INFO werkzeug 127.0.0.1 - - "GET /relatorios/vendas HTTP/1.1" 200 -
 
 Sweep completo das 17 rotas (leitura, escrita, validação e checagens de segurança) passou: `/usuarios` sem campo `senha`, `/health` sem segredos, `/admin/*` respondendo 404.
 
+### Validação com curl
+
+Servidor real no ar (`python src/app.py`, porta 5000), todas as rotas conferidas com `curl`:
+
+| Método | Rota | Status | O que valida |
+|---|---|---:|---|
+| GET | `/` | 200 | índice |
+| GET | `/health` | 200 | sem `secret_key`/`db_path`/`debug` |
+| GET | `/produtos` | 200 | listagem |
+| GET | `/produtos/1` | 200 | busca por id |
+| GET | `/produtos/busca?q=Mouse` | 200 | busca parametrizada |
+| GET | `/usuarios` | 200 | **sem o campo `senha`** |
+| GET | `/usuarios/1` | 200 | busca por id |
+| GET | `/pedidos` | 200 | listagem |
+| POST | `/login` (senha certa) | 200 | hash funcionando |
+| POST | `/login` (senha errada) | 401 | credencial inválida |
+| POST | `/usuarios` | 201 | cadastro |
+| POST | `/produtos` | 201 | criação |
+| POST | `/produtos` (preço < 0) | 400 | validação |
+| PUT | `/produtos/2` | 200 | atualização |
+| POST | `/pedidos` | 201 | pedido + baixa de estoque (transação) |
+| GET | `/pedidos/usuario/2` | 200 | pedidos do usuário |
+| PUT | `/pedidos/1/status` | 200 | mudança de status |
+| GET | `/relatorios/vendas` | 200 | cálculo de desconto |
+| DELETE | `/produtos/10` | 200 | remoção |
+| GET | `/produtos/9999` | 404 | not found central |
+| POST | `/admin/query` | 404 | endpoint removido |
+| POST | `/admin/reset-db` | 404 | endpoint removido |
+
 ### Observação sobre a stack
 
 No monolito Flask a Fase 3 criou toda a estrutura MVC do zero — não havia camada nenhuma para aproveitar. A conexão global com `check_same_thread=False` virou conexão por request via `flask.g`, e as queries concatenadas viraram parametrizadas sem mudar as rotas. A comparação entre stacks diferentes fecha quando os projetos Node/Express e o Flask já parcialmente organizado forem rodados.

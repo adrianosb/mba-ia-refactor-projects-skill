@@ -377,10 +377,11 @@ INFO werkzeug: 127.0.0.1 - - "POST /login HTTP/1.1" 200 -
 
 ### Validação com curl — task-manager-api
 
-Servidor real no ar, as 22 rotas conferidas — abaixo a amostra principal:
+Servidor real no ar (porta 5001), as 22 rotas conferidas uma a uma (26 casos, incluindo validações e erros):
 
 | Método | Rota | Status | O que valida |
 |---|---|---:|---|
+| GET | `/` | 200 | índice |
 | GET | `/health` | 200 | boot sem expor config |
 | GET | `/tasks` | 200 | listagem (JOIN, sem N+1) |
 | GET | `/tasks/1` | 200 | busca por id + `overdue` |
@@ -388,19 +389,26 @@ Servidor real no ar, as 22 rotas conferidas — abaixo a amostra principal:
 | GET | `/tasks/stats` | 200 | agregação em controller |
 | GET | `/users` | 200 | **sem o campo `password`** |
 | GET | `/users/1` | 200 | usuário + tasks |
+| GET | `/users/1/tasks` | 200 | tasks do usuário |
 | GET | `/reports/summary` | 200 | agregação em memória (sem N+1) |
 | GET | `/reports/user/1` | 200 | relatório por usuário |
 | GET | `/categories` | 200 | listagem |
+| GET | `/tasks/9999` | 404 | not found |
 | POST | `/tasks` | 201 | criação |
 | POST | `/tasks` (título curto) | 400 | validação |
 | PUT | `/tasks/1` | 200 | atualização |
 | DELETE | `/tasks/1` | 200 | remoção |
 | POST | `/users` | 201 | cadastro (sem `password` na resposta) |
 | POST | `/users` (email repetido) | 409 | conflito |
+| PUT | `/users/1` | 200 | atualização |
+| DELETE | `/users/4` | 200 | remoção + cascade das tasks |
 | POST | `/login` (senha certa) | 200 | hash werkzeug funcionando |
 | POST | `/login` (senha errada) | 401 | credencial inválida |
-| DELETE | `/users/4` | 200 | remoção + cascade das tasks |
-| GET | `/tasks/9999` | 404 | not found |
+| POST | `/categories` | 201 | criação |
+| PUT | `/categories/1` | 200 | atualização |
+| DELETE | `/categories/5` | 200 | remoção |
+
+O cascade do `DELETE /users` foi confirmado: criando um usuário com uma task e apagando o usuário, a task some (`GET /tasks/<id>` → 404). Nenhuma rota devolveu 500 no log do servidor.
 
 ### Observação sobre a stack (Flask já organizado)
 

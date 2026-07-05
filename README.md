@@ -99,7 +99,7 @@ A skill detecta a stack na Fase 1 (pelo manifesto de dependências e imports) e 
 
 ## 3. Resultados
 
-> Por enquanto a skill foi executada no **code-smells-project**. Os projetos `ecommerce-api-legacy` e `task-manager-api` serão rodados depois e entram aqui na sequência.
+> A skill já foi executada no **code-smells-project** e no **ecommerce-api-legacy**. O `task-manager-api` será rodado depois e entra aqui na sequência.
 
 ### Resumo da auditoria — code-smells-project
 
@@ -203,4 +203,97 @@ Servidor real no ar (`python src/app.py`, porta 5000), todas as rotas conferidas
 
 ### Observação sobre a stack
 
-No monolito Flask a Fase 3 criou toda a estrutura MVC do zero — não havia camada nenhuma para aproveitar. A conexão global com `check_same_thread=False` virou conexão por request via `flask.g`, e as queries concatenadas viraram parametrizadas sem mudar as rotas. A comparação entre stacks diferentes fecha quando os projetos Node/Express e o Flask já parcialmente organizado forem rodados.
+No monolito Flask a Fase 3 criou toda a estrutura MVC do zero — não havia camada nenhuma para aproveitar. A conexão global com `check_same_thread=False` virou conexão por request via `flask.g`, e as queries concatenadas viraram parametrizadas sem mudar as rotas. A comparação com o Node/Express está logo abaixo; falta só o Flask já parcialmente organizado (`task-manager-api`).
+
+---
+
+### Resumo da auditoria — ecommerce-api-legacy
+
+Relatório completo em [`reports/audit-project-2.md`](reports/audit-project-2.md).
+
+| Projeto | Stack | CRITICAL | HIGH | MEDIUM | LOW | Total |
+|---|---|---:|---:|---:|---:|---:|
+| ecommerce-api-legacy | Node.js/Express 4.18.2 | 4 | 4 | 4 | 2 | 14 |
+
+Os 4 CRITICAL: credenciais hardcoded (chave `pk_live_...` do gateway em `utils.js`), hash caseiro (`badCrypto`) com senha nunca verificada, God class (`AppManager.js`, 141 linhas com DB + rotas + regra) e o número do cartão + a chave do gateway impressos no log durante o checkout.
+
+### Estrutura antes/depois — ecommerce-api-legacy
+
+```
+antes                          depois
+─────────────────────          ──────────────────────────────
+src/app.js       (14 L)        src/app.js              composition root (buildApp)
+src/AppManager.js (141 L) God  src/config/index.js     env vars + loader de .env
+src/utils.js     (25 L) segredo src/db/                connection (Promises) + seed
+                               src/models/             user, course, enrollment, payment, audit, report
+                               src/services/           checkout (transação), report (JOIN)
+                               src/controllers/        checkout, report, user
+                               src/routes/             3 routers (só roteamento)
+                               src/middlewares/        auth (Bearer) + errorHandler
+                               src/utils/              logger, password (scrypt), http
+                               .env.example
+
+3 arquivos, ~181 linhas        ~23 módulos em 7 camadas
+```
+
+### Checklist de validação — ecommerce-api-legacy
+
+**Fase 1 — Análise**
+- [x] Linguagem detectada corretamente (JavaScript/Node.js)
+- [x] Framework detectado corretamente (Express 4.18.2)
+- [x] Domínio descrito corretamente (LMS com checkout de cursos)
+- [x] Número de arquivos analisados condiz com a realidade (3)
+
+**Fase 2 — Auditoria**
+- [x] Relatório segue o template definido nos arquivos de referência
+- [x] Cada finding tem arquivo e linhas exatos
+- [x] Findings ordenados por severidade (CRITICAL → LOW)
+- [x] Mínimo de 5 findings identificados (14 encontrados)
+- [x] Detecção de APIs deprecated incluída (callback hell do `sqlite3`; sem `new Buffer`/`body-parser`)
+- [x] Skill pausa e pede confirmação antes da Fase 3
+
+**Fase 3 — Refatoração**
+- [x] Estrutura de diretórios segue padrão MVC
+- [x] Configuração extraída para módulo de config (sem hardcoded, segredos via `process.env`)
+- [x] Models criados para abstrair dados (6 entidades, queries parametrizadas)
+- [x] Views/Routes separadas para roteamento (3 routers)
+- [x] Controllers concentram o fluxo da aplicação
+- [x] Error handling centralizado (`middlewares/errorHandler.js`)
+- [x] Entry point claro (`src/app.js` só faz o wiring)
+- [x] Aplicação inicia sem erros
+- [x] Endpoints originais respondem corretamente
+
+Correções de segurança que alteram o contrato (sinalizadas): `/api/admin/financial-report` e `DELETE /api/users/:id` passaram a exigir `Authorization: Bearer <ADMIN_TOKEN>` (401 sem token); o delete agora faz cascade cleanup e responde `{"msg":"Usuário e vínculos removidos"}` no lugar da mensagem que admitia deixar dados órfãos. O `badCrypto` foi trocado por `scrypt` com salt; os segredos saíram do código para `.env`.
+
+### Log da aplicação rodando após a refatoração
+
+```
+$ npm start
+{"ts":"2026-07-05T18:33:55.759Z","level":"info","msg":"server.started","port":3000}
+{"ts":"2026-07-05T18:33:56.922Z","level":"info","msg":"checkout.payment","course_id":2,"status":"PAID"}
+{"ts":"2026-07-05T18:33:56.989Z","level":"info","msg":"checkout.payment","course_id":1,"status":"DENIED"}
+```
+
+Log estruturado e sem dado sensível: o `course_id` e o `status` aparecem, mas o número do cartão e a chave do gateway (que o legado imprimia em `AppManager.js:45`) não.
+
+### Validação com curl — ecommerce-api-legacy
+
+Servidor real no ar (`npm start`, porta 3000), rotas conferidas com `curl`:
+
+| Método | Rota | Status | O que valida |
+|---|---|---:|---|
+| POST | `/api/checkout` (cartão 4…) | 200 | sucesso, `{msg, enrollment_id}` |
+| POST | `/api/checkout` (cartão 5…) | 400 | pagamento recusado |
+| POST | `/api/checkout` (campos ausentes) | 400 | `Bad Request` |
+| POST | `/api/checkout` (curso inexistente) | 404 | `Curso não encontrado` |
+| GET | `/api/admin/financial-report` (sem token) | 401 | auth exigida |
+| GET | `/api/admin/financial-report` (com token) | 200 | shape preservado, receita por curso |
+| DELETE | `/api/users/1` (sem token) | 401 | auth exigida |
+| DELETE | `/api/users/1` (com token) | 200 | cascade cleanup |
+| GET | `/api/admin/financial-report` (após o delete) | 200 | Clean Architecture zera (`revenue:0, students:[]`) — sem matrícula/pagamento órfão |
+
+Retornos reais da rodada limpa: checkout de sucesso devolveu `{"msg":"Sucesso","enrollment_id":2}`; o relatório com token trouxe `Clean Architecture` (997, Leonan) e `Docker` (497, Guilherme); após o `DELETE /api/users/1` o mesmo relatório mostrou o Clean Architecture zerado, confirmando o cascade.
+
+### Observação sobre a stack (Node/Express)
+
+Aqui o problema central era uma God class com SQL cru em callbacks aninhados, não um monolito de arquivo único como no Flask. A skill manteve a ideia das camadas e adaptou a sintaxe: a transação virou `db.transaction()` sobre a API do `sqlite3` promissificada, o relatório com 4 níveis de callback aninhado (N+1) virou um `JOIN` agregado em memória, e o hash caseiro foi para `scrypt` nativo. As rotas e os shapes de resposta continuaram os mesmos — só as duas rotas admin ganharam o gate de autenticação, sinalizado acima.

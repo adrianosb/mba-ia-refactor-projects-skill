@@ -4,6 +4,8 @@ Repositório do desafio de criação de uma Skill para auditar e refatorar proje
 
 ## Análise Manual
 
+Cada problema está classificado por severidade, e a coluna **Impacto** justifica por que ele é relevante.
+
 ### code-smells-project (Python/Flask — API de E-commerce)
 
 API monolítica de e-commerce em 4 arquivos (`app.py`, `controllers.py`, `models.py`, `database.py`), sem separação real de camadas. A lista abaixo não cobre todos os problemas, apenas os de maior impacto arquitetural e de segurança.
@@ -49,3 +51,47 @@ Projeto já com alguma separação de camadas (`models/`, `routes/`, `services/`
 | MEDIUM | **Regra de negócio duplicada nas rotas** — o cálculo de "overdue" é copiado em 4 lugares mesmo existindo `Task.is_overdue()`, e o validador `process_task_data` em `helpers.py` nunca é usado | Correções precisam ser feitas em vários pontos e o código morto engana quem lê; alto risco de inconsistência. | routes/task_routes.py, routes/user_routes.py, routes/report_routes.py, utils/helpers.py |
 | LOW | **Imports não utilizados** — `os, sys, json, datetime` em `app.py`, `json, os, sys, time` nas rotas e vários módulos em `helpers.py` sem uso | Poluição visual que sugere dependências inexistentes e dificulta a leitura. | app.py (7), routes/task_routes.py (7), utils/helpers.py (1–7) |
 | LOW | **`print` como log** — observabilidade feita com `print` espalhado pelas rotas | Sem níveis nem controle do que vai para a saída em produção; dificulta diagnóstico e polui os logs. | routes/task_routes.py (149, 219), routes/user_routes.py (83, 147) |
+
+
+## 2. Construção da Skill
+
+### Decisões de design
+
+O `SKILL.md` é o prompt: descreve o fluxo das 3 fases e as regras que valem sempre (fases 1 e 2 só leem, todo finding aponta arquivo e linha, a refatoração preserva as rotas). O conhecimento de domínio fica em 5 arquivos de referência, um por área exigida no desafio:
+
+| Arquivo | Área | Usado na |
+|---|---|---|
+| `references/project-analysis.md` | Detecção de linguagem, framework, banco e arquitetura | Fase 1 |
+| `references/anti-patterns.md` | Catálogo com sinais de detecção e severidade + APIs deprecated | Fase 2 |
+| `references/report-template.md` | Formato do relatório de auditoria | Fase 2 |
+| `references/mvc-guidelines.md` | Camadas do MVC alvo e layout por stack | Fase 3 |
+| `references/refactor-playbook.md` | Transformações antes/depois | Fase 3 |
+
+Separei o conhecimento do fluxo por dois motivos: manter o `SKILL.md` curto (ele carrega sempre) e deixar cada referência ser lida só quando a fase começa, em vez de tudo de uma vez. Assim ajustar o catálogo ou o playbook não mexe no prompt principal.
+
+O gate entre a Fase 2 e a Fase 3 é o ponto central: a skill imprime o relatório, pergunta `Proceed with refactoring (Phase 3)? [y/n]` e só continua com uma confirmação clara. Nada é escrito em disco antes disso.
+
+### Catálogo de anti-patterns
+
+São 15 anti-patterns (AP-01 a AP-15), com severidade distribuída e escolhidos a partir dos problemas que encontrei na análise manual dos 3 projetos:
+
+| Severidade | Anti-patterns | Por que entraram |
+|---|---|---|
+| CRITICAL | SQL injection, credenciais hardcoded, senha em texto claro/hash fraco, God Class, endpoint destrutivo sem auth | São os problemas de segurança e arquitetura que aparecem nos 3 projetos e violam o MVC de forma mais grave (ex.: `AppManager` e `models.py` concentrando tudo). |
+| HIGH | Regra de negócio no controller, estado global mutável, dado sensível na resposta, falta de transação | Violações de SOLID que travam teste e manutenção — como o checkout sem atomicidade e o `to_dict` vazando o hash. |
+| MEDIUM | N+1, validação ausente/duplicada, APIs deprecated, captura genérica de exceção | Duplicação e performance que apareceram nos 3 (o N+1 em todos, a validação repetida entre criar/atualizar). |
+| LOW | `print` como log, magic numbers | Legibilidade e observabilidade — comuns e fáceis de corrigir. |
+
+Incluí a detecção de **APIs deprecated** como item próprio (AP-12), com uma seção por stack (Flask, SQLAlchemy, Express), já que o desafio exige recomendar o equivalente moderno — ex.: `datetime.utcnow()` → `datetime.now(timezone.utc)`, `new Buffer()` → `Buffer.from()`.
+
+O playbook responde a cada anti-pattern com uma transformação numerada (§1 a §12), sempre com código antes/depois em Python e Node.
+
+### Como garanti que é agnóstica de tecnologia
+
+A skill detecta a stack na Fase 1 (pelo manifesto de dependências e imports) e só então decide o layout. As referências descrevem **padrões de detecção**, não comandos de uma linguagem: "query com valor de request interpolado" em vez de uma sintaxe fixa. Os exemplos do catálogo e do playbook vêm em Python/Flask e Node/Express lado a lado, e as guidelines trazem o layout de diretórios das duas stacks. Há ainda uma regra explícita para projetos que já têm camadas (como o `task-manager-api`): completar o que falta em vez de renomear o que já funciona, evitando churn.
+
+### Desafios encontrados
+
+- **Equilibrar tamanho e cobertura.** Os arquivos de referência podiam ficar enormes. Mantive o playbook enxuto (uma transformação por anti-pattern) apontando que engrossar catálogo e playbook é a iteração normal caso a skill detecte pouco.
+- **Não quebrar projetos já organizados.** O 3º projeto já tem `models/`, `routes/`, `services/`. Adicionei em `mvc-guidelines.md` uma seção específica de "camadas parciais" para a skill não reestruturar do zero.
+- **Preservar comportamento.** Como a refatoração move muito código, a Fase 3 tem validação obrigatória (boot da aplicação + bater em cada rota original) antes de reportar sucesso.
